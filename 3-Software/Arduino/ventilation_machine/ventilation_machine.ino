@@ -31,16 +31,20 @@ Use the Rate potentiometer to move the arm up/down.
 #include "ArduinoUniqueID.h"
 #endif
 
-
-/**** options for display and debug via serial com ***/
+/**** options for serial com ***/
 // both options should not be on at the same time!
 #define send_to_monitor 0
     // 0 -> No serial output for monitor
     // 1 -> Send data to monitor, see send_data_to_monitor() for more info
-#define telemetry 1
-    // 0 -> Does not send any debugging over serial 
-    // 1 -> Send telemetry for debug... see print_tele() for optional telemetry data to send
+#define telemetry 0
+    // 0 -> Does not send any telemetry over serial 
+    // 1 -> Send telemetry... see print_tele() for optional telemetry data to send
 
+/*** Debugging modes (for programmers only!) ***/
+// Sends relevant debugging information over serial. You should turn telemetry && send_to_monitor off
+#define debug 0
+#define debug_screen 1
+#define debug_IO 1
 
 // UI
 #define deltaUD \
@@ -834,6 +838,8 @@ void calibrate_pot_range()  // used for calibaration of potentiometers
 
 void display_LCD()  // here function that sends data to LCD
 {
+	if(debug_screen){Serial.println("general screen refresh called - " + String(millis()) );}
+	
     if (LCD_available)
     {
         if (calibON == 0 && state != MENU_STATE)
@@ -844,24 +850,32 @@ void display_LCD()  // here function that sends data to LCD
 			String line2 = "";
 			
 			// BAZINGA should be a switch
-            if (failure == 0)
-            {
-                if (millis() - start_disp_pres < 2000)
-                {
-					line2 += "Insp. Press. :" + String(byte(insp_pressure));
-                }
-                else
-                {
-					line2 += "Pmin:" + String(byte(prev_min_pressure)) + String(byte(prev_max_pressure)) + "  Pmax:" + String(byte(prev_max_pressure));
-                }
-            }
-            if (failure == 1)
-                line2 += "Pipe Disconnect";
-            if (failure == 2)
-                line2 += "High Pressure";
-            if (failure == 3)
-                line2 += "Motion Fail";
-        
+            switch (failure)
+			{
+				case 0:
+	                if (millis() - start_disp_pres < 2000)
+	                {
+						line2 += "Insp. Press. :" + String(byte(insp_pressure));
+	                }
+	                else
+	                {
+						line2 += "Pmin:" + String(byte(prev_min_pressure)) + String(byte(prev_max_pressure)) + "  Pmax:" + String(byte(prev_max_pressure));
+	                }
+					break;
+				
+				case 1:
+					line2 += "Pipe Disconnect";				
+					break;
+				
+				case 2:
+					line2 += "High Pressure";
+					break;
+				
+				case 3:
+					line2 += "Motion Fail";
+					break;
+			}	
+
 			// Sending the information to the display
             lcd.clear();
             lcd.setCursor(0, 0);
