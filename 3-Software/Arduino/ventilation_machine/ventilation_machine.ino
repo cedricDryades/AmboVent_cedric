@@ -19,6 +19,7 @@ Use the Rate potentiometer to move the arm up/down.
 #include <SparkFun_MS5803_I2C.h>
 #include <Wire.h>
 
+
 // system configuration
 #define full_configuration \
     1  // 1 is the default - full system.   0 is for partial system - potentiometer installed on
@@ -30,11 +31,16 @@ Use the Rate potentiometer to move the arm up/down.
 #include "ArduinoUniqueID.h"
 #endif
 
-// options for display and debug via serial com
-#define send_to_monitor 1  // 1 = send data to monitor  0 = dont
-#define telemetry \
-    0  // 1 = send telemtry for debug  ... see end of code for optional telemetry data to send
-       // (uncomment selected lines)
+
+/**** options for display and debug via serial com ***/
+// both options should not be on at the same time!
+#define send_to_monitor 0
+    // 0 -> No serial output for monitor
+    // 1 -> Send data to monitor, see send_data_to_monitor() for more info
+#define telemetry 1
+    // 0 -> Does not send any debugging over serial 
+    // 1 -> Send telemetry for debug... see print_tele() for optional telemetry data to send
+
 
 // UI
 #define deltaUD \
@@ -222,6 +228,7 @@ void setup()
     motor.attach(pin_PWM);
     Serial.begin(115200);
     Wire.begin();
+	Wire.setClock(100000UL);
 
 #if (pressure_sensor_available == 1)
     {
@@ -235,9 +242,10 @@ void setup()
     {
         lcd.init();      // initialize the LCD
         lcd.setCursor(0, 0);
-        lcd.print("AmvoVent       ");
-        lcd.setCursor(0, 1);
-        lcd.print("1690.108       ");
+        lcd.print("AmboVent");
+        lcd.setCursor(1, 0);
+        lcd.print("MAKE HAVEN TEST");
+        delay(1000);
     }
 
 #if central_monitor_system 
@@ -346,15 +354,13 @@ void display_menu()
     case 3:  // move arm down once
         if (progress == 0)
         {
-            display_text_2_lines("Press TEST to", "run one breath  ");
+            display_text_2_lines("Press TEST to", "run one breath");
             if (TST_pressed)
             {
                 initialize_breath();
                 progress = 1;
             }
-        }
-        if (progress == 1)
-        {
+        } else if (progress == 1) {
             run_profile_func();
             if (cycle_number > 0)
                 exit_menu();
@@ -386,7 +392,7 @@ void display_menu()
                     lcd.clear();
                     lcd.setCursor(0, 0);
                     lcd.print("Set Motion Time");
-                    lcd.setCursor(0, 1);
+                    lcd.setCursor(1, 0);
                     lcd.print(int(100 * motion_time));
                     lcd.print(" mSec");
                 }
@@ -711,13 +717,23 @@ void calc_failure()
 
 void display_text_2_lines(char const *message1, char const *message2)
 {
+  
+  static char previousMsg1[16] = "";
+  static char previousMsg2[16] = "";
+
+  // BAZINGA Trying to get rid of the flickering
+  if(!strcmp(message1, previousMsg1) && !strcmp(message2,previousMsg2) ){ return; }
+  strcpy(previousMsg1, message1);
+  strcpy(previousMsg2, message2);
+  
+  
     if (millis() - lastUSRblink > 100)
     {
         lastUSRblink = millis();
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print(message1);
-        lcd.setCursor(0, 1);
+        lcd.setCursor(1, 0);
         lcd.print(message2);
     }
 }
@@ -727,7 +743,7 @@ void display_text_calib(char const *message)
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print(message);
-    lcd.setCursor(0, 1);
+    lcd.setCursor(1, 0);
     lcd.print("Then press Test");
 }
 
@@ -822,37 +838,37 @@ void display_LCD()  // here function that sends data to LCD
     {
         if (calibON == 0 && state != MENU_STATE)
         {
-            lcd.clear();
-            lcd.setCursor(0, 0);
-            lcd.print("BPM:");
-            lcd.print(byte(BPM));
-            lcd.print("  Dep:");
-            lcd.print(byte(Compression_perc));
-            lcd.print("%");
-            lcd.setCursor(0, 1);
+			// Building the two lines to be sent to the display
+
+			String line1 = "BPM:" + String(byte(BPM)) + "  Dep:" + String(byte(Compression_perc)) + "%";
+			String line2 = "";
+			
+			// BAZINGA should be a switch
             if (failure == 0)
             {
                 if (millis() - start_disp_pres < 2000)
                 {
-                    lcd.setCursor(0, 1);
-                    lcd.print("Insp. Press. :");
-                    lcd.print(byte(insp_pressure));
+					line2 += "Insp. Press. :" + String(byte(insp_pressure));
                 }
                 else
                 {
-                    lcd.print("Pmin:");
-                    lcd.print(byte(prev_min_pressure));
-                    lcd.print("  Pmax:");
-                    lcd.print(byte(prev_max_pressure));
+					line2 += "Pmin:" + String(byte(prev_min_pressure)) + String(byte(prev_max_pressure)) + "  Pmax:" + String(byte(prev_max_pressure));
                 }
             }
             if (failure == 1)
-                lcd.print("Pipe Disconnect");
+                line2 += "Pipe Disconnect";
             if (failure == 2)
-                lcd.print("High Pressure");
+                line2 += "High Pressure";
             if (failure == 3)
-                lcd.print("Motion Fail");
-        }
+                line2 += "Motion Fail";
+        
+			// Sending the information to the display
+            lcd.clear();
+            lcd.setCursor(0, 0);
+			lcd.print(line1);
+            lcd.setCursor(1, 0);
+			lcd.print(line2);
+		}
     }
 }
 
@@ -935,6 +951,7 @@ void store_prev_values()
 
 void read_IO()
 {
+  
     store_prev_values();
 
     RST = (1 - digitalRead(pin_RST));
@@ -999,7 +1016,9 @@ void read_IO()
     if (invert_pot)
         A_pot = 1023 - A_pot;
     A_current = analogRead(pin_CUR) / 8;  // in tenth Amps
-    if (control_with_pot)
+    
+    // Action based on potentiometers changing values
+	    if (control_with_pot)
     {
         A_rate = analogRead(pin_FRQ);
         A_comp = analogRead(pin_AMP);
@@ -1020,21 +1039,24 @@ void read_IO()
         A_rate = range_pot(int(pot_rate), rate_pot_low, rate_pot_high);
         A_pres = range_pot(int(pot_pres), pres_pot_low, pres_pot_high);
 
-        Compression_perc = perc_of_lower_vol_display
-                           + int(float(A_comp) * (100 - perc_of_lower_vol_display) / 1023);
-        Compression_perc = constrain(Compression_perc, perc_of_lower_vol_display, 100);
+	        Compression_perc = perc_of_lower_vol_display
+	                           + int(float(A_comp) * (100 - perc_of_lower_vol_display) / 1023);
+	        Compression_perc = constrain(Compression_perc, perc_of_lower_vol_display, 100);
 
-        BPM = 6 + (A_rate - 23) / 55;           // 0 is 6 breaths per minute, 1023 is 24 BPM
-        breath_cycle_time = 60000 / BPM + 100;  // in milisec
+	        BPM = 6 + (A_rate - 23) / 55;           // 0 is 6 breaths per minute, 1023 is 24 BPM
+	        breath_cycle_time = 60000 / BPM + 100;  // in milisec
 
-        insp_pressure = 30 + A_pres / 25;  // 0 is 30 mBar, 1023 is 70 mBar
-        insp_pressure = constrain(insp_pressure, 30, 70);
-        if (abs(insp_pressure - prev_insp_pressure) > 1)
-        {
-            prev_insp_pressure = insp_pressure;
-            start_disp_pres = millis();
-            display_LCD();
-        }
+	        insp_pressure = 30 + A_pres / 25;  // 0 is 30 mBar, 1023 is 70 mBar
+	        insp_pressure = constrain(insp_pressure, 30, 70);
+      // We ignore this if we are in the config menu to prevent unnecessary calculations while in the menu
+    if(state != MENU_STATE && false){
+	        if (abs(insp_pressure - prev_insp_pressure) > 1)
+	        {
+	            prev_insp_pressure = insp_pressure;
+	            start_disp_pres = millis();
+	            display_LCD();
+	        }
+		}
     }
     else
     {
@@ -1108,7 +1130,6 @@ void read_IO()
         range_factor = 1;
     if (range_factor < 0)
         range_factor = 0;
-
 #if (pressure_sensor_available == 1)
     {
         if (millis() - last_read_pres > 100)
@@ -1179,24 +1200,27 @@ void LED_USR(byte val)
     digitalWrite(pin_USR, val);
 }
 
-void print_tele()  // UNCOMMENT THE TELEMETRY NEEDED
+
+// Serial debugging of the machine
+// You can comment/uncomment any line necessary as needed
+// controlled by the variable telemetry
+void print_tele()
 {
-    //  Serial.print(" Fail (disc,motion,hiPres):"); Serial.print(disconnected); Serial.print(",");
-    //  Serial.print(motion_failure); Serial.print(","); Serial.print(high_pressure_detected);
-    //  Serial.print(" CL:");  Serial.print(cycles_lost);
-    //  Serial.print(" min,max:");  Serial.print(min_arm_pos); Serial.print(",");
-    //  Serial.print(max_arm_pos); Serial.print(" WPWM :");  Serial.print(motorPWM); Serial.print("
-    //  integral:");  Serial.print(int(integral));
+    Serial.print(" Current Failure (disc,motion,hiPres):"); Serial.print(disconnected); Serial.print(",");
+    Serial.print(motion_failure); Serial.print(","); Serial.print(high_pressure_detected);
+    Serial.print(" CL:");  Serial.print(cycles_lost);
+    Serial.print(" min,max:");  Serial.print(min_arm_pos); Serial.print(",");
+    Serial.print(max_arm_pos); Serial.print(" WPWM :");  Serial.print(motorPWM); Serial.print("integral:   ");  Serial.print(int(integral));
     Serial.print(" Wa:");
     Serial.print(int(wanted_pos));
     Serial.print(" Ac:");
     Serial.print(A_pot);
-    //  Serial.print(" cur:");  Serial.print(A_current);
-    //  Serial.print(" amp:");  Serial.print(Compression_perc);
-    //  Serial.print(" freq:");  Serial.print(A_rate);
-    //  Serial.print(" w cyc t:"); Serial.print(wanted_cycle_time);
-    //  Serial.print(" P :"); Serial.print(pressure_abs);
-    //  Serial.print(" AvgP :"); Serial.print(int(avg_pres));
-    //  Serial.print(" RF:");  Serial.print(range_factor);
+    Serial.print(" cur:");  Serial.print(A_current);
+    Serial.print(" amp:");  Serial.print(Compression_perc);
+    Serial.print(" freq:");  Serial.print(A_rate);
+    Serial.print(" w cyc t:"); Serial.print(wanted_cycle_time);
+    Serial.print(" P :"); Serial.print(pressure_abs);
+    Serial.print(" AvgP :"); Serial.print(int(avg_pres));
+    Serial.print(" RF:");  Serial.print(range_factor);
     Serial.println("");
 }
