@@ -386,12 +386,17 @@ void display_menu()
                 if (millis() - lastUSRblink > 100)
                 {
                     lastUSRblink = millis();
+<<<<<<< Updated upstream
                     lcd.clear();
                     lcd.setCursor(0, 0);
                     lcd.print("Set Motion Time");
                     lcd.setCursor(0, 1);
                     lcd.print(int(100 * motion_time));
                     lcd.print(" mSec");
+=======
+					char[] line2 = 100 * motion_time +" mSec";
+					display_text_2_lines("Set Motion Time",line2);
+>>>>>>> Stashed changes
                 }
             }
             delay(500);
