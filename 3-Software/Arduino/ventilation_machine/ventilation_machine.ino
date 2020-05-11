@@ -18,6 +18,7 @@ Use the Rate potentiometer to move the arm up/down.
 #include <Servo.h>
 #include <SparkFun_MS5803_I2C.h>
 #include <Wire.h>
+#include <ams_as5048b.h>
 
 // system configuration
 #define full_configuration \
@@ -30,13 +31,28 @@ Use the Rate potentiometer to move the arm up/down.
 #include "ArduinoUniqueID.h"
 #endif
 
-// options for display and debug via serial com
-#define send_to_monitor 1  // 1 = send data to monitor  0 = dont
-#define telemetry \
-    0  // 1 = send telemtry for debug  ... see end of code for optional telemetry data to send
-       // (uncomment selected lines)
+/**** options for serial com ***/
+// both options should not be on at the same time!
+#define send_to_monitor 0
+    // 0 -> No serial output for monitor
+    // 1 -> Send data to monitor, see send_data_to_monitor() for more info
+#define data_frequency 1000 // data refresh rate
+				
+#define telemetry 0
+    // 0 -> Does not send any telemetry over serial 
+    // 1 -> Send telemetry... see print_tele() for optional telemetry data to send
+#define tele_frequency 1000 // Telemetry refresh rate
 
-// UI
+/*** Debugging modes (for programmers only!) ***/
+// Sends relevant debugging information over serial. You should turn telemetry && send_to_monitor off
+// Debug adds delay to the execution, they should not be activated in "production"!
+#define debug 1
+#define debug_screen 1
+#define debug_IO 1
+
+/*** USER INTERFACE ***/
+#define display_refresh_rate 3000 // min refresh rate for the screen
+		
 #define deltaUD \
     5  // define the value chnage per each button press for the non-potentiometer version only
 #define pot_alpha 0.85  // filter the pot values
@@ -67,16 +83,16 @@ Use the Rate potentiometer to move the arm up/down.
 #    define LCD_available 0
 #    define pres_pot_available \
         0              // 1 if the system has 3 potentiometer and can control the inspirium pressure
-#    define pin_SW2 7  // breath - On / Off / cal
-#    define pin_TST 2  // test mode - not in use
+#    define SW2_pin 7  // breath - On / Off / cal
+#    define TST_pin 2  // test mode - not in use
 #    define pin_LED_AMP 11           // amplitude LED
 #    define pin_LED_FREQ 9           // frequency LED
 #    define pin_LED_Fail 10          // FAIL and calib blue LED
 #    define pin_USR 12               // User LED
-#    define pin_FD 4                 // freq Down
-#    define pin_FU 5                 // freq Up
-#    define pin_AD 8                 // Amp Down
-#    define pin_AU 6                 // Amp Up
+#    define FD_pin 4                 // freq Down
+#    define FU_pin 5                 // freq Up
+#    define AD_pin 8                 // Amp Down
+#    define AU_pin 6                 // Amp Up
 #    define curr_sense 1             // 1- there is a curent sensor
 #    define control_with_pot 0       // 1 = control with potentiometers  0 = with push buttons
 #    define FF 0.6                   // motion control feed forward
@@ -90,17 +106,17 @@ Use the Rate potentiometer to move the arm up/down.
 #    define LCD_available 1
 #    define pres_pot_available \
         1              // 1 if the system has 3 potentiometer and can control the inspirium pressure
-#    define pin_SW2 4  // breath - On / Off / cal
-#    define pin_TST 2  // test mode - not in use
-#    define pin_RST 5  // reset alarm - not in use
+#    define SW2_pin 4  // breath - On / Off / cal
+#    define TST_pin 2  // test mode - not in use
+#    define RST_pin 5  // reset alarm - not in use
 #    define pin_LED_AMP 13           // amplitude LED
 #    define pin_LED_FREQ 13          // frequency LED
 #    define pin_LED_Fail 10          // FAIL and calib blue LED
 #    define pin_USR 9                // User LED
-#    define pin_FD 13                // freq Down - not used when you have potentiometers
-#    define pin_FU 13                // freq Up - not used when you have potentiometers
-#    define pin_AD 13                // Amp Down - not used when you have potentiometers
-#    define pin_AU 13                // Amp Up - not used when you have potentiometers
+#    define FD_pin 13                // freq Down - not used when you have potentiometers
+#    define FU_pin 13                // freq Up - not used when you have potentiometers
+#    define AD_pin 13                // Amp Down - not used when you have potentiometers
+#    define AU_pin 13                // Amp Up - not used when you have potentiometers
 #    define curr_sense 0             // o no current sensor
 #    define control_with_pot 1       // 1 = control with potentiometers  0 = with push buttons
 #    define FF 4.5                   // motion control feed forward
@@ -133,12 +149,22 @@ Use the Rate potentiometer to move the arm up/down.
 // motor and sensor definitions
 #define invert_mot 1
 #define invert_pot 0
+#define magnetic_encoder 1
 
+// I2C sensors adresses
+#define I2C_adr_lcd 0x27
+#define I2C_adr_press 0x76
+#define I2C_adr_arm 0x40
+			
 Servo motor;
-LiquidCrystal_I2C lcd(0x27, 16,
-                      2);  // Set the LCD address to 0x27 for a 16 chars and 2 line display
+// LCDi2cNHD lcd(2, 16, 0x28, 0);  // Set the LCD address to 0x28 for a 16 chars and 2 line display
+LiquidCrystal_I2C lcd(I2C_adr_lcd, 16,2);  // Set the LCD address to 0x27 for a 16 chars and 2 line display
 #if (pressure_sensor_available == 1)
-MS5803 sparkfumPress(ADDRESS_HIGH);
+MS5803 sparkfunPress(I2C_adr_press);
+#endif
+
+#if (magnetic_encoder)
+AMS_AS5048B armSensor;
 #endif
 
 // Motion profile parameters
@@ -177,15 +203,15 @@ const PROGMEM byte vel[profile_length] = {
     126, 127, 127, 127, 127, 127, 127, 127, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
     128, 128, 129, 129, 129, 129, 129, 129, 129, 129, 129, 128, 128, 128, 128, 128};
 
-byte FD, FU, AD, AU, prev_FD, prev_FU, prev_AD, prev_AU, SW2, prev_SW2, prev_TST, RST, LED_status,
-    USR_status, blueOn, calibrated = 0, calibON, numBlinkFreq, SW2_pressed, TST_pressed, menu_state;
+byte FD_cur, FU_cur, AD_cur, AU_cur, FD_prev, FU_prev, AD_prev, AU_prev, SW2_cur, SW2_prev, SW2_pressed, SW2_debounced, TST_cur, TST_prev, TST_pressed, TST_debounced, RST_cur, RST_prev, RST_pressed = 0, RST_debounced, LED_status,
+    USR_status, blueOn, calibrated = 0, calibON, numBlinkFreq, menu_pos;
 byte monitor_index = 0, BPM = 14, prev_BPM, in_wait, failure, send_beep, wanted_cycle_time,
-     disconnected = 0, high_pressure_detected = 0, motion_failure = 0, sent_LCD, hold_breath,
+     disconnected = 0, high_pressure_detected = 0, motion_failure = 0, hold_breath,
      safety_pressure_detected;
-byte counter_ON, counter_OFF, SW2temp, insp_pressure, prev_insp_pressure, safety_pressure_counter,
+byte counter_ON, counter_OFF, insp_pressure, prev_insp_pressure, safety_pressure_counter,
     no_fail_counter, TST, counter_TST_OFF, counter_TST_ON, TSTtemp;
 byte patient_triggered_breath, motion_time, progress;
-int A_pot, prev_A_pot, A_current, Compression_perc = 80, prev_Compression_perc, A_rate, A_comp,
+int A_sensed_pos, prev_A_sensed_pos, A_current, Compression_perc = 80, prev_Compression_perc, A_rate, A_comp,
                                   A_pres;
 int motorPWM, index = 0, prev_index, i, wait_cycles, cycle_number, cycles_lost, index_last_motion;
 int pressure_abs, breath_cycle_time, max_pressure = 0, prev_max_pressure = 0, min_pressure = 100,
@@ -193,29 +219,51 @@ int pressure_abs, breath_cycle_time, max_pressure = 0, prev_max_pressure = 0, mi
 int comp_pot_low = 0, comp_pot_high = 1023, rate_pot_low = 0, rate_pot_high = 1023,
     pres_pot_low = 0, pres_pot_high = 1023;
 unsigned int max_arm_pos, min_arm_pos;
-unsigned long lastSent, lastIndex, lastUSRblink, last_TST_not_pressed, lastBlue, start_wait,
-    last_sent_data, last_read_pres, start_disp_pres;
+unsigned long lastSent, lastIndex, lastUSRblink, lastBlue, start_wait,
+    last_sent_data, last_sent_tele, last_read_pres, start_disp_pres, SW2_timer, TST_timer, RST_timer;
 float pot_rate, pot_pres, pot_comp, avg_pres;
 float wanted_pos, wanted_vel_PWM, range, range_factor, profile_planned_vel, planned_vel, integral,
     error, prev_error, f_reduction_up;
+
+String display_line1, display_line2, display_prev_line1, display_prev_line2;
+int	display_updates, display_last;
+
+enum screens : int
+{
+	SCR_STBY,
+	SCR_BREATH,
+	SCR_CFG,
+	SCR_CFG_PRES_SAVED,
+	SCR_CFG_POTL,
+	SCR_CFG_POTR,
+	SCR_CFG_POTS,
+	SCR_CFG_ARM_UP,
+	SCR_CFG_ARM_DOWN,
+	SCR_CFG_ARM_SAFE,
+	SCR_CFG_ARM_SAVE,
+	SCR_CFG_MOTION,
+	SCR_CFG_MOTION_SAVE
+};
+enum screens screen;
 
 enum main_states : byte
 {
     STBY_STATE,
     BREATH_STATE,
-    MENU_STATE
+    CFG_STATE
 };
 enum main_states state;
 
 void setup()
 {
     pinMode(pin_PWM, OUTPUT);
-    pinMode(pin_FD, INPUT_PULLUP);
-    pinMode(pin_FU, INPUT_PULLUP);
-    pinMode(pin_AD, INPUT_PULLUP);
-    pinMode(pin_AU, INPUT_PULLUP);
-    pinMode(pin_SW2, INPUT_PULLUP);
-    pinMode(pin_TST, INPUT_PULLUP);
+    pinMode(FD_pin, INPUT_PULLUP);
+    pinMode(FU_pin, INPUT_PULLUP);
+    pinMode(AD_pin, INPUT_PULLUP);
+    pinMode(AU_pin, INPUT_PULLUP);
+    pinMode(SW2_pin, INPUT_PULLUP);
+    pinMode(TST_pin, INPUT_PULLUP);
+    pinMode(RST_pin, INPUT_PULLUP);
     pinMode(pin_LED_AMP, OUTPUT);
     pinMode(pin_LED_FREQ, OUTPUT);
     pinMode(pin_LED_Fail, OUTPUT);
@@ -223,34 +271,63 @@ void setup()
     motor.attach(pin_PWM);
     Serial.begin(115200);
     Wire.begin();
+	Wire.setClock(100000UL);
 
 #if (pressure_sensor_available == 1)
     {
-        sparkfumPress.reset();
-        sparkfumPress.begin();
-        pressure_baseline = int(sparkfumPress.getPressure(ADC_4096));
+		// Checking if sensor present
+		// BAZINGA add non resetable error if missing
+		Wire.beginTransmission(I2C_adr_press);
+		byte i2c_error = Wire.endTransmission();
+		if(i2c_error){ Serial.println("ERROR: Pressure sensor not present @ address " + String(I2C_adr_press, HEX)); }
+
+        sparkfunPress.reset();
+        sparkfunPress.begin();
+        pressure_baseline = int(sparkfunPress.getPressure(ADC_4096));
     }
 #endif
 
     if (LCD_available)
     {
-        lcd.begin();      // initialize the LCD
-        lcd.backlight();  // Turn on the blacklight and print a message.
+		// Checking if LCD present
+		// BAZINGA add non resetable error if missing
+		Wire.beginTransmission(I2C_adr_lcd);
+		byte i2c_error = Wire.endTransmission();
+		if(i2c_error){ Serial.println("ERROR: LCD not present @ address " + String(I2C_adr_lcd, HEX)); }
+		
+        // lcd.init();      // initialize the LCD
+		lcd.init();      // initialize the LCD
+		lcd.backlight();  // Turn on the blacklight and print a message.
         lcd.setCursor(0, 0);
-        lcd.print("AmvoVent       ");
+        lcd.print("AmboVent");
         lcd.setCursor(0, 1);
-        lcd.print("1690.108       ");
+        lcd.print("MAKE HAVEN");
+        delay(1000);
     }
+	
+	Serial.println("Ambovent - Make Haven");
 
-#if central_monitor_system 
+#if central_monitor_system
     for (i = 0; i < 100; i++)
     {
         UniqueIDdump(Serial);
-        delay(100);
     }  // for IAI monitor run for 100 cycles
- #endif
+#endif
 
-    state = STBY_STATE;
+#if (magnetic_encoder)
+    {
+		// Checking if magnetic encoder present
+		// BAZINGA add non resetable error if missing
+		Wire.beginTransmission(I2C_adr_arm);
+		byte i2c_error = Wire.endTransmission();
+		if(i2c_error){ Serial.println("ERROR: arm encoder not present @ address " + String(I2C_adr_arm, HEX)); }
+
+        armSensor.begin();
+    }
+#endif
+
+    state = STBY_STATE; // BAZINGA state not implemented - might not be necessary
+	screen = SCR_STBY;
     EEPROM.get(4, min_arm_pos);
     delay(20);
     EEPROM.get(8, max_arm_pos);
@@ -272,173 +349,383 @@ void setup()
     insp_pressure = insp_pressure_default;
     patient_triggered_breath = patient_triggered_breath_def;
     motion_time = motion_time_default;
-    lcd.backlight();  // Turn on the blacklight and print a message.
 }
 
 void loop()
-{
+{	
+	// Reads all the sensor values and stores them
     read_IO();
+
+	// Background operations - () BAZINGA to be done by transfering the bottom part of read_IO
+	// Checks if failures are still active
+	operations();
+	
+	// UI / actions (depending on the "screen" the machine operates whatever it needs to)
+	user_interface();
+
+	// Telemetry (see function)
+    print_tele();
+	
+	// Monitor data display (see function)
+    send_data_to_monitor();
+	
+	// update the display (once per loop max)
+	display_refresh();
+}
+
+// User interface 
+// Action can define the state of the machine as well as the diferrent menus/interactions
+void user_interface()
+{
+	/* Actions based on the state of the machine
     switch (state)
     {
     case STBY_STATE:  // standby
         standby_func();
-        if (SW2_pressed && calibrated == 1)  // start breathing motion
+        if (SW2_pressed)  // start breathing motion
         {
-            state = BREATH_STATE;
-            initialize_breath();
+			if(!calibrated){
+				display_to_LCD("ERROR: Machine", "not calibrated"); // BAZINGA
+				delay(500);
+			}else{
+	            state = BREATH_STATE;
+	            initialize_breath();
+			}			
         }
-        if (TST == 0)
-            last_TST_not_pressed = millis();
-        if (millis() - last_TST_not_pressed > 3000)
-        {
-            LED_USR(1);
-            while (TST == 1 || TST_pressed)
-            {
-                read_IO();
-            }  // wait for button release
-            progress = 0;
-            state = MENU_STATE;
-        }
+		// BAZINGA retire car pas sur du truc
+        // if (TST_cur == 0)
+        //     last_TST_not_pressed = millis();
+        // if (millis() - last_TST_not_pressed > 3000)
+        // {
+        //     LED_USR(1);
+        //     while (TST == 1 || TST_pressed)
+        //     {
+        //         read_IO();
+        //     }  // wait for button release
+        //     progress = 0;
+        //     state = CFG_STATE;
+        // }
+
         break;
 
     case BREATH_STATE:  // run profile
         run_profile_func();
+		display_breathing();
         if (SW2_pressed)
             state = STBY_STATE;  // stop breathing motion
         break;
 
-    case MENU_STATE:  // maintanance menu
+    case CFG_STATE:  // maintanance menu
         display_menu();
         break;
     }
+	*/
 
-    if (millis() - last_sent_data > 20)
-    {
-        if (send_to_monitor == 1 && telemetry == 0)
-            send_data_to_monitor();
-        if (telemetry == 1)
-            print_tele();
-        last_sent_data = millis();
-    }
+	// Screen to be displayed + actions per screen
+	switch (screen)
+	{
+		// Startup "screen" - SCR_STBY
+		case SCR_STBY:
+			calibrated = 1; //BAZINGA
+			display_breathing();
+
+			if(RST_pressed == 1){            
+				RST_pressed = 0;
+				progress = 0;
+				screen = SCR_CFG;
+			}
+			if(SW2_pressed == 1){            
+				SW2_pressed = 0;
+				LED_USR(1);
+				initialize_breath();
+				screen = SCR_BREATH;
+			}
+			if(TST_pressed == 1){            
+				TST_pressed = 0;
+				calibrated = 1;
+				reset_failures();
+			}
+			break;
+
+		case SCR_BREATH:
+			if(SW2_pressed == 1){            
+				SW2_pressed = 0;
+				LED_USR(0);
+				motion_stop();
+				screen = SCR_STBY;
+			}
+			calibrated = 1; //BAZINGA
+			run_profile_func();
+			display_breathing();
+			// reset_failures();
+			break;
+		
+			// Configuration menu + submenus
+		case SCR_CFG:
+		
+			LED_USR(1); // BAZINGA - better way to do this?
+			calibON = 1; // BAZINGA - check if still usefull after all edits
+
+			// Using pot to navigate in the menu
+		    menu_pos = map(pot_rate, 0, 1023, 0, 8);
+		    menu_pos = constrain(menu_pos, 0, 8);
+
+		    switch (menu_pos)
+		    {					
+			    case 1:  // calib pot
+			        display_to_LCD("Calibrate Pots", "TEST to start");
+			        if (RST_pressed == 1)
+			        {
+						RST_pressed = 0;
+						screen = SCR_CFG_POTL;						
+			        }
+			        break;
+
+			    case 2:  // calib pressure sensor
+			        display_to_LCD("Calib pressure", "TEST to start");
+			        if (RST_pressed == 1)
+			        {
+			            pressure_baseline = int(sparkfunPress.getPressure(ADC_4096));
+						RST_pressed = 0;
+						screen = SCR_CFG_PRES_SAVED;
+			        }
+			        break;
+
+			    case 3:  // move arm down once
+			        if (progress == 0)
+			        {
+			            display_to_LCD("Press TEST to", "run one breath  ");
+			            if (RST_pressed == 1)
+			            {
+							RST_pressed = 0;
+			                initialize_breath();
+			                progress = 1;
+			            }
+			        } else if (progress == 1) {
+			            run_profile_func();
+			            // if (cycle_number > 0)
+			            //     exit_menu();
+			        }
+			        break;
+
+					
+			    case 4:  // calib arm range of movement
+			        display_to_LCD("Calibrate Arm", "TEST to start");
+			        if (RST_pressed == 1)
+			        {
+						RST_pressed = 0;
+						screen = SCR_CFG_ARM_UP;
+			        }
+			        break;
+
+			    case 5:  // set motion profile total time
+			        display_to_LCD("Set Motion Time", "TEST to start ");
+			        if (RST_pressed == 1)
+			        {
+						RST_pressed = 0;
+						screen = SCR_CFG_MOTION;
+					}
+			        break;
+
+			    case 6:  // toggle sync to patient
+			        if (patient_triggered_breath == 1){ display_to_LCD("Sync to patient", "ON  ");}
+			        if (patient_triggered_breath == 0){ display_to_LCD("Sync to patient", "OFF ");}
+			        if (RST_pressed == 1){
+						RST_pressed = 0;
+			            patient_triggered_breath = 1 - patient_triggered_breath;
+			        }
+			        break;
+
+			    default:
+			        display_to_LCD("Exit Menu", "Press MENU"+String(menu_pos));
+			        if (RST_pressed == 1){
+						RST_pressed = 0;
+					    // state = STBY_STATE;
+						screen = SCR_STBY;
+					    calibON = 0;
+					    LED_USR(0); // BAZINGA
+			        }
+				break;
+				
+			} // end switch menu_pos
+			break;
+			
+		case SCR_CFG_PRES_SAVED:
+			display_to_LCD("Pressure setting", "saved");
+			screen = SCR_CFG;
+			break;
+		
+		case SCR_CFG_POTL:
+        	display_to_LCD("Turn all pots LEFT", "TEST to continue");
+			// calibrate_pot_range();
+			if(RST_pressed == 1){            
+				RST_pressed = 0;
+			    comp_pot_low = analogRead(pin_AMP);
+			    rate_pot_low = analogRead(pin_FRQ);
+			    pres_pot_low = analogRead(pin_PRE);
+				screen = SCR_CFG_POTR;
+			}
+			break;
+
+		case SCR_CFG_POTR:
+        	display_to_LCD("Turn all pots RIGHT", "TEST to continue");
+			// calibrate_pot_range();
+			if(RST_pressed == 1){            
+				RST_pressed = 0;
+			    comp_pot_high = analogRead(pin_AMP);
+			    rate_pot_high = analogRead(pin_FRQ);
+			    pres_pot_high = analogRead(pin_PRE);
+				screen = SCR_CFG_POTS;
+			}
+			break;
+
+		case SCR_CFG_POTS:
+        	display_to_LCD("Saving pots calibration ", "");
+		    EEPROM.put(12, comp_pot_low);
+		    delay(100);
+		    EEPROM.put(16, comp_pot_high);
+		    delay(100);
+		    EEPROM.put(20, rate_pot_low);
+		    delay(100);
+		    EEPROM.put(24, rate_pot_high);
+		    delay(100);
+		    EEPROM.put(28, pres_pot_low);
+		    delay(100);
+		    EEPROM.put(32, pres_pot_high);
+		    delay(100);
+			screen = SCR_CFG;
+			break;
+
+		case SCR_CFG_ARM_UP:
+			display_to_LCD("Move arm upper", "position: " + String(A_sensed_pos));
+			delay(100);
+			if(RST_pressed == 1){            
+				RST_pressed = 0;
+			    min_arm_pos = A_sensed_pos;
+				screen = SCR_CFG_ARM_DOWN;
+			}
+			break;
+	
+		case SCR_CFG_ARM_DOWN:
+			display_to_LCD("Move arm lower", "position: " + String(A_sensed_pos));
+			delay(100);
+			if(RST_pressed == 1){            
+				RST_pressed = 0;
+			    max_arm_pos = A_sensed_pos;
+				screen = SCR_CFG_ARM_SAFE;
+			}
+			break;
+
+		case SCR_CFG_ARM_SAFE:
+			delay(100);
+			display_to_LCD("Release arm", "Gently");
+			if(RST_pressed == 1){            
+				RST_pressed = 0;
+				screen = SCR_CFG_ARM_SAVE;
+			}
+			break;
+
+		case SCR_CFG_ARM_SAVE:
+			display_to_LCD("Saving Arm calibration", "");
+			if(debug){Serial.println("Saving Arm Calibration. Lower:" + String(min_arm_pos) + " Upper:" + String(max_arm_pos));}
+		    EEPROM.put(4, min_arm_pos);
+		    delay(200);
+		    EEPROM.put(8, max_arm_pos);
+		    delay(200);
+			screen = SCR_CFG;
+			break;
+
+
+		// case SCR_CFG_MOTION:
+		// 	        motion_time = map(pot_rate, 0, 1023, 25, 50);
+		// 	        motion_time = constrain(motion_time, 25, 50);
+		//
+		// 	String line2;
+		// 	line2 += 100 * motion_time; //BAZINGA
+		// 	line2 += " mSec";
+		// 	display_to_LCD("Set Motion Time",line2);
+		// 	if(RST_pressed == 1){
+		// 		RST_pressed = 0;
+		// 		screen = SCR_CFG_MOTION_SAVE;
+		// 	}
+		// 	break;
+
+		case SCR_CFG_MOTION_SAVE:
+			display_to_LCD("Motion setting", "saved");
+			screen = SCR_CFG;
+			break;
+
+
+	
+	}	
 }
 
-void display_menu()
-{
-    menu_state = map(pot_rate, 0, 1023, 0, 8);
-    menu_state = constrain(menu_state, 0, 8);
-    switch (menu_state)
-    {
-    case 1:  // calib pot
-        display_text_2_lines("Calibrate Pots", "TEST to start");
-        if (TST_pressed)
-        {
-            calibrate_pot_range();
-            exit_menu();
-        }
-        break;
 
-    case 2:  // calib pressure sensor
-        display_text_2_lines("Calib pressure", "TEST to start");
-        if (TST_pressed)
-        {
-            pressure_baseline = int(sparkfumPress.getPressure(ADC_4096));
-            exit_menu();
-        }
-        break;
 
-    case 3:  // move arm down once
-        if (progress == 0)
-        {
-            display_text_2_lines("Press TEST to", "run one breath  ");
-            if (TST_pressed)
-            {
-                initialize_breath();
-                progress = 1;
-            }
-        }
-        if (progress == 1)
-        {
-            run_profile_func();
-            if (cycle_number > 0)
-                exit_menu();
-        }
-        break;
 
-    case 4:  // calib arm range of movement
-        display_text_2_lines("Calibrate Arm", "TEST to start");
-        if (TST_pressed)
-        {
-            calibrate_arm_range();
-            exit_menu();
-        }
-        break;
 
-    case 5:  // set motion profile total time
-        display_text_2_lines("Set Motion Time", "TEST to start ");
-        if (TST_pressed)
-        {
-            read_IO();
-            while (TST_pressed == 0)
-            {
-                read_IO();
-                motion_time = map(pot_rate, 0, 1023, 25, 50);
-                motion_time = constrain(motion_time, 25, 50);
-                if (millis() - lastUSRblink > 100)
-                {
-                    lastUSRblink = millis();
-<<<<<<< Updated upstream
-                    lcd.clear();
-                    lcd.setCursor(0, 0);
-                    lcd.print("Set Motion Time");
-                    lcd.setCursor(0, 1);
-                    lcd.print(int(100 * motion_time));
-                    lcd.print(" mSec");
-=======
-					char[] line2 = 100 * motion_time +" mSec";
-					display_text_2_lines("Set Motion Time",line2);
->>>>>>> Stashed changes
-                }
-            }
-            delay(500);
-            exit_menu();
-        }
-        break;
 
-    case 6:  // toggle sync to patient
-        if (patient_triggered_breath == 1)
-            display_text_2_lines("Sync to patient", "ON  ");
-        if (patient_triggered_breath == 0)
-            display_text_2_lines("Sync to patient", "OFF  ");
-        if (TST_pressed)
-        {
-            patient_triggered_breath = 1 - patient_triggered_breath;
-            delay(110);  //  wait enough time that the display will be updated ..
-            if (patient_triggered_breath == 1)
-                display_text_2_lines("Sync to patient", "ON  ");
-            if (patient_triggered_breath == 0)
-                display_text_2_lines("Sync to patient", "OFF  ");
-            delay(1000);
-            exit_menu();
-        }
-        break;
 
-    default:
-        display_text_2_lines("Exit Menu", "Press TEST ");
-        if (TST_pressed)
-            exit_menu();
-        break;
-    }
+
+
+
+
+// Updates the display with whatever information was collected this loop
+// Will freeze the Arduino for the lenght of the display_pause if any
+void display_refresh()
+{			
+	// Screen has a max refresh rate to avoid flickering and unwated behaviours
+	if((millis() - display_last) < display_refresh_rate){
+		return;
+	}else{
+		display_last = millis();
+	}
+
+    // Not refreshing the screen if the content is the same (BAZINGA redundant with display_to_LCD)
+    if( display_prev_line1 == display_line1 && display_prev_line2 == display_line2 ){ return; }
+	display_prev_line1 = display_line1;
+	display_prev_line2 = display_line2;
+	
+	// debug
+	if(debug_screen){Serial.println("Screen: " + display_line1 + " || " + display_line2); delay(250);}
+	else{display_updates=0;} // used in display_to_LCD to display any "lost" screen update
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(display_line1);
+    lcd.setCursor(0, 1); // BAZINGA - Our New Haven display library is "backwards"...
+    lcd.print(display_line2);
+
+	// BAZINGA - is it needed? What does it do exactly?
+    lastUSRblink = millis();
 }
 
-void exit_menu()
+// Updates the display with whatever information was collected this loop
+// Will freeze the Arduino for the lenght of the display_pause if any
+void display_to_LCD(String line1, String line2)
 {
-    read_IO();
-    last_TST_not_pressed = millis();
-    state = STBY_STATE;
-    index = 0;
-    calibON = 0;
-    display_LCD();
-    progress = 0;
+	// Not updating if information has not changed
+	if(display_line1==line1 && display_line2==line2){return;}
+
+	display_line1 = line1;
+	display_line2 = line2;
+
+	// keeps track of the number of updates to catch if we are trying to update the screen more than once (see debug)
+	display_updates += 1 ;
+	
+	//debug
+	if(display_to_LCD>1){Serial.println("Debug screen: more than one update: " + display_line1 + " --- " + display_line2);}
+}
+
+
+// General background operations:
+// - Resets the failure if they are not relevant anymore
+// BAZINGA move all the operations in read_IO here
+void operations()
+{
+	// BAZINGA reset failures temporarily
+	reset_failures();
+	
 }
 
 void run_profile_func()
@@ -450,6 +737,7 @@ void run_profile_func()
         lastIndex = millis();  // last start of cycle time
         calculate_wanted_pos_vel();
 
+		// If the motion of the arm is too far away from expected
         if (100 * abs(error) / (max_arm_pos - min_arm_pos) > motion_control_allowed_error
             && cycle_number > 1)
             motion_failure = 1;
@@ -471,7 +759,7 @@ void run_profile_func()
         if (patient_triggered_breath
             == 1)  // detect drop in presure during the PEEP plateu and trigger breath based on this
         {
-            if (in_wait == 1 || (index > profile_length / 2 && (A_pot < min_arm_pos + range / 18)))
+            if (in_wait == 1 || (index > profile_length / 2 && (A_sensed_pos < min_arm_pos + range / 18)))
             {
                 if (avg_pres - pressure_abs > delta_pres_patient_inhale)
                     start_new_cycle();  // start new breath cycle if patient tries to inhale durint
@@ -489,11 +777,6 @@ void run_profile_func()
         if (index >= (profile_length - 2))  // wait for the next cycle to begin in this point -> 2
                                             // points befoe the last cycle index
         {
-            if (sent_LCD == 0)
-            {
-                sent_LCD = 1;
-                display_LCD();  // update the display at the end of cycle
-            }
             if (millis() - start_wait < breath_cycle_time)
             {
                 index = profile_length - 2;
@@ -523,17 +806,17 @@ void calculate_wanted_pos_vel()
     planned_vel = profile_planned_vel;
     if (hold_breath == 1 && safety_pressure_detected == 0)
     {
-        if (wanted_pos <= float(A_pot) || index == 0)
+        if (wanted_pos <= float(A_sensed_pos) || index == 0)
             hold_breath = 0;
         planned_vel = 0;
         integral = 0;
-        wanted_pos = float(A_pot);  // hold current position
+        wanted_pos = float(A_sensed_pos);  // hold current position
     }
     if (safety_pressure_detected)
         planned_vel = -speed_multiplier_reverse
                       * planned_vel;  // to do the revese in case high pressure detected
     prev_error = error;
-    error = wanted_pos - float(A_pot);
+    error = wanted_pos - float(A_sensed_pos);
 
     integral += error * float(wanted_cycle_time) / 1000;
     if (integral > integral_limit)
@@ -611,7 +894,6 @@ void start_new_cycle()
     start_wait = millis();
     in_wait = 0;
     send_beep = 1;
-    sent_LCD = 0;
     high_pressure_detected = 0;
 }
 
@@ -717,150 +999,44 @@ void calc_failure()
     prev_index = index;
 }
 
-void display_text_2_lines(char const *message1, char const *message2)
-{
-    if (millis() - lastUSRblink > 100)
-    {
-        lastUSRblink = millis();
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(message1);
-        lcd.setCursor(0, 1);
-        lcd.print(message2);
-    }
-}
-
-void display_text_calib(char const *message)
-{
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(message);
-    lcd.setCursor(0, 1);
-    lcd.print("Then press Test");
-}
-
-void display_pot_during_calib()
-{
-    if (millis() - lastUSRblink > 100)
-    {
-        lcd.setCursor(13, 0);
-        lcd.print(A_pot);
-        lcd.print(" ");
-        lastUSRblink = millis();
-    }
-}
-
-void calibrate_arm_range()  // used for calibaration of motion range
-{
-    LED_USR(1);
-    calibON = 1;
-    progress = 0;
-
-    display_text_calib("Set Upper");
-    while (progress == 0)
-        internal_arm_calib_step();  // step 1 - calibrate top position
-    progress = 0;
-    min_arm_pos = A_pot;
-
-    display_text_calib("Set Lower");
-    while (progress == 0)
-        internal_arm_calib_step();  // step 2 - calibrate bottom position
-    progress = 0;
-    max_arm_pos = A_pot;
-
-    display_text_calib("Move to Safe");
-    while (progress == 0)
-        internal_arm_calib_step();  // step 3 - manual control for positioning back in safe location
-
-    EEPROM.put(4, min_arm_pos);
-    delay(200);
-    EEPROM.put(8, max_arm_pos);
-    delay(200);
-    calibrated = 1;
-}
-
-void internal_arm_calib_step()
-{
-    read_IO();
-    if (TST_pressed)
-        progress = 1;
-    set_motor_PWM(0);
-    display_pot_during_calib();
-    delay(3);
-}
-
-void calibrate_pot_range()  // used for calibaration of potentiometers
-{
-    LED_USR(1);
-    calibON = 2;
-
-    read_IO();
-    display_text_calib("Pot to left pos");
-    while (TST_pressed == 0)
-        read_IO();  // step 1 - calibrate top position
-    comp_pot_low = analogRead(pin_AMP);
-    rate_pot_low = analogRead(pin_FRQ);
-    pres_pot_low = analogRead(pin_PRE);
-
-    read_IO();
-    display_text_calib("Pot to right pos");
-    while (TST_pressed == 0)
-        read_IO();  // step 2 - calibrate bottom position
-    comp_pot_high = analogRead(pin_AMP);
-    rate_pot_high = analogRead(pin_FRQ);
-    pres_pot_high = analogRead(pin_PRE);
-
-    EEPROM.put(12, comp_pot_low);
-    delay(100);
-    EEPROM.put(16, comp_pot_high);
-    delay(100);
-    EEPROM.put(20, rate_pot_low);
-    delay(100);
-    EEPROM.put(24, rate_pot_high);
-    delay(100);
-    EEPROM.put(28, pres_pot_low);
-    delay(100);
-    EEPROM.put(32, pres_pot_high);
-    delay(100);
-}
-
-void display_LCD()  // here function that sends data to LCD
+// In breathing & Standby mode, displays BPM, DEP and pressure
+// displays possible failures on the second line
+void display_breathing()  
 {
     if (LCD_available)
     {
-        if (calibON == 0 && state != MENU_STATE)
-        {
-            lcd.clear();
-            lcd.setCursor(0, 0);
-            lcd.print("BPM:");
-            lcd.print(byte(BPM));
-            lcd.print("  Dep:");
-            lcd.print(byte(Compression_perc));
-            lcd.print("%");
-            lcd.setCursor(0, 1);
-            if (failure == 0)
-            {
+		// Building the two lines to be sent to the display
+		String temp_line1 = "BPM:" + String(byte(BPM)) + "  Dep:" + String(byte(Compression_perc)) + "%";
+		String temp_line2 = "";
+		
+        switch (failure)
+		{
+			case 0:
                 if (millis() - start_disp_pres < 2000)
                 {
-                    lcd.setCursor(0, 1);
-                    lcd.print("Insp. Press. :");
-                    lcd.print(byte(insp_pressure));
+					temp_line2 += "Insp. Press. :" + String(byte(insp_pressure));
                 }
                 else
                 {
-                    lcd.print("Pmin:");
-                    lcd.print(byte(prev_min_pressure));
-                    lcd.print("  Pmax:");
-                    lcd.print(byte(prev_max_pressure));
+					temp_line2 += "Pmin:" + String(byte(prev_min_pressure)) + String(byte(prev_max_pressure)) + "  Pmax:" + String(byte(prev_max_pressure));
                 }
-            }
-            if (failure == 1)
-                lcd.print("Pipe Disconnect");
-            if (failure == 2)
-                lcd.print("High Pressure");
-            if (failure == 3)
-                lcd.print("Motion Fail");
-        }
+				break;
+			
+			case 1:
+				temp_line2 += "Pipe Disconnect";				
+				break;
+			
+			case 2:
+				temp_line2 += "High Pressure";
+				break;
+			
+			case 3:
+				temp_line2 += "Motion Fail";
+				break;
+		}	
+
+		// Sending the info to the display buffer (see display_to_LCD())
+		display_to_LCD(temp_line1, temp_line2);
     }
 }
 
@@ -873,7 +1049,7 @@ void reset_failures()
 
 void set_motor_PWM(float wanted_vel_PWM)
 {
-    if (abs(A_pot - prev_A_pot) > 0 || abs(wanted_vel_PWM) < 15)
+    if (abs(A_sensed_pos - prev_A_sensed_pos) > 0 || abs(wanted_vel_PWM) < 15)
         index_last_motion = index;
     if (calibON == 1)
         wanted_vel_PWM = read_motion_for_calib();  // allows manual motion during calibration
@@ -885,7 +1061,7 @@ void set_motor_PWM(float wanted_vel_PWM)
             wanted_vel_PWM = 0;
     }
     if (motion_failure == 1 && calibON == 0)
-        wanted_vel_PWM = 0;
+        // wanted_vel_PWM = 0;
     if (wanted_vel_PWM > 0)
         wanted_vel_PWM += 3;  // undo controller dead band
     if (wanted_vel_PWM < 0)
@@ -896,6 +1072,13 @@ void set_motor_PWM(float wanted_vel_PWM)
         wanted_vel_PWM = PWM_min;  // limit PWM
     motorPWM = PWM_mid + int(wanted_vel_PWM);
     motor.write(motorPWM);
+}
+
+// Stop the arm movement
+void motion_stop()
+{
+    wanted_vel_PWM = 0;  // dont move
+    set_motor_PWM(wanted_vel_PWM);
 }
 
 int read_motion_for_calib()
@@ -909,103 +1092,113 @@ int read_motion_for_calib()
             wanted_cal_PWM = (pot_rate - 250) / 15;
         if (pot_rate >= 250 && pot_rate <= 750)
             wanted_cal_PWM = 0;
-        if (SW2 == 1)
+        if (SW2_cur == 1)
             wanted_cal_PWM = -12;
-        // if (RST==1) wanted_cal_PWM= 12;
+        // if (RST_cur_cur==1) wanted_cal_PWM= 12;
     }
     else
     {
         wanted_cal_PWM = 0;
-        if (FD == 1)
+        if (FD_cur == 1)
             wanted_cal_PWM = 8;
-        if (FU == 1)
+        if (FD_cur == 1)
             wanted_cal_PWM = -8;
-        if (AD == 1)
+        if (AD_cur == 1)
             wanted_cal_PWM = 16;
-        if (AU == 1)
+        if (AU_cur == 1)
             wanted_cal_PWM = -16;
     }
     return (wanted_cal_PWM);
 }
 
-void store_prev_values()
-{
-    prev_FD = FD;
-    prev_FU = FU;
-    prev_AD = AD;
-    prev_AU = AU;
-    prev_SW2 = SW2;
-    prev_TST = TST;
-    prev_BPM = BPM;
-    prev_A_pot = A_pot;
-    prev_Compression_perc = Compression_perc;
-}
-
+// Read the current states of the user IO
+// compares to previous state, if there has been an action saves that "state"
 void read_IO()
 {
-    store_prev_values();
+	/* BAZINGA - previous shit - whyyyy?
+    FD_prev = FD_cur;
+    FU_prev = FU_cur;
+    AD_prev = AD_cur;
+    AU_prev = AU_cur;
+    SW2_prev = SW2;
+    prev_TST = TST;
+    prev_BPM = BPM;
+    prev_A_sensed_pos = A_sensed_pos;
+    prev_Compression_perc = Compression_perc;
+	*/	
+	
+	// RST Button - Used for the menu
+	//RST_pressed = false; // Resetting any previous state
+    RST_cur = (1 - digitalRead(RST_pin));
 
-    RST = (1 - digitalRead(pin_RST));
-    TSTtemp = (1 - digitalRead(pin_TST));
-    SW2temp = (1 - digitalRead(pin_SW2));
+	if(RST_cur != RST_prev){ 
+		RST_timer = millis();
+	}
 
-    if (SW2temp == 1)
-    {
-        counter_ON += 1;
-        if (counter_ON > 20)
-        {
-            SW2 = 1;
-            counter_ON = 100;
-        }
-    }
-    else
-        counter_ON = 0;
-    if (SW2temp == 0)
-    {
-        counter_OFF += 1;
-        if (counter_OFF > 20)
-        {
-            SW2 = 0;
-            counter_OFF = 100;
-        }
-    }
-    else
-        counter_OFF = 0;
-    if (SW2 == 0 && prev_SW2 == 1)
-        SW2_pressed = 1;
-    else
-        SW2_pressed = 0;
+	// ignoring interactions that are too short (debounce)
+	if((millis() - RST_timer) > 50){ 
+		if(RST_cur != RST_debounced){
+			RST_debounced = RST_cur;
 
-    if (TSTtemp == 1)
-    {
-        counter_TST_ON += 1;
-        if (counter_TST_ON > 20)
-        {
-            TST = 1;
-            counter_TST_ON = 100;
-        }
-    }
-    else
-        counter_TST_ON = 0;
-    if (TSTtemp == 0)
-    {
-        counter_TST_OFF += 1;
-        if (counter_TST_OFF > 20)
-        {
-            TST = 0;
-            counter_TST_OFF = 100;
-        }
-    }
-    else
-        counter_TST_OFF = 0;
-    if (TST == 0 && prev_TST == 1)
-        TST_pressed = 1;
-    else
-        TST_pressed = 0;
+			if(RST_debounced == 0){
+				RST_pressed = 1;
+				if(debug_IO){Serial.println("DEBUG IO: RST pressed!");}
+			}
+		}
+	}
+	RST_prev = RST_cur;
 
-    A_pot = analogRead(pin_POT);
+
+	// Start Button - 
+    SW2_cur = (1 - digitalRead(SW2_pin));
+
+	if(SW2_cur != SW2_prev){ 
+		SW2_timer = millis();
+	}
+
+	// ignoring interactions that are too short (debounce)
+	if((millis() - SW2_timer) > 50){ 
+		if(SW2_cur != SW2_debounced){
+			SW2_debounced = SW2_cur;
+
+			if(SW2_debounced == 0){
+				SW2_pressed = true;
+				if(debug_IO){Serial.println("DEBUG IO: SW2 pressed!");}
+			}
+		}
+	}
+	SW2_prev = SW2_cur;
+		
+	// Test Button - 
+    TST_cur = (1 - digitalRead(TST_pin));
+
+	if(TST_cur != TST_prev){ 
+		TST_timer = millis();
+	}
+
+	// ignoring interactions that are too short (debounce)
+	if((millis() - TST_timer) > 50){ 
+		if(TST_cur != TST_debounced){
+			TST_debounced = TST_cur;
+
+			if(TST_debounced == 0){
+				TST_pressed = true;
+				if(debug_IO){Serial.println("DEBUG IO: TST pressed!");}
+			}
+		}
+	}
+	TST_prev = TST_cur;
+	
+	
+
+#if (magnetic_encoder)
+	A_sensed_pos = 1024 * armSensor.angleR(U_TRN, true);
+#else
+	A_sensed_pos = analogRead(pin_POT);
+#endif
+
     if (invert_pot)
-        A_pot = 1023 - A_pot;
+        A_sensed_pos = 1023 - A_sensed_pos;
     A_current = analogRead(pin_CUR) / 8;  // in tenth Amps
     if (control_with_pot)
     {
@@ -1037,29 +1230,29 @@ void read_IO()
 
         insp_pressure = 30 + A_pres / 25;  // 0 is 30 mBar, 1023 is 70 mBar
         insp_pressure = constrain(insp_pressure, 30, 70);
+
         if (abs(insp_pressure - prev_insp_pressure) > 1)
         {
             prev_insp_pressure = insp_pressure;
             start_disp_pres = millis();
-            display_LCD();
         }
     }
     else
     {
-        FD = (1 - digitalRead(pin_FD));
-        FU = (1 - digitalRead(pin_FU));
-        AD = (1 - digitalRead(pin_AD));
-        AU = (1 - digitalRead(pin_AU));
-        if (TST == 0)
+        FD_cur = (1 - digitalRead(FD_pin));
+        FD_cur = (1 - digitalRead(FU_pin));
+        AD_cur = (1 - digitalRead(AD_pin));
+        AU_cur = (1 - digitalRead(AU_pin));
+        if (TST_pressed == 0)
         {
-            if (FD == 0 && prev_FD == 1)
+            if (FD_cur == 0 && FD_prev == 1)
             {
                 BPM -= 2;
                 if (BPM < 6)
                     BPM = 6;
                 cycle_number = 0;
             }
-            if (FU == 0 && prev_FU == 1)
+            if (FD_cur == 0 && FU_prev == 1)
             {
                 BPM += 2;
                 if (BPM > 24)
@@ -1067,40 +1260,40 @@ void read_IO()
                 cycle_number = 0;
             }
             breath_cycle_time = 60000 / BPM + 100;
-            if (AD == 0 && prev_AD == 1)
+            if (AD_cur == 0 && AD_prev == 1)
             {
                 Compression_perc -= deltaUD;
                 if (Compression_perc < perc_of_lower_vol_display)
                     Compression_perc = perc_of_lower_vol_display;
             }
-            if (AU == 0 && prev_AU == 1)
+            if (AU_cur == 0 && AU_prev == 1)
             {
                 Compression_perc += deltaUD;
                 if (Compression_perc > 100)
                     Compression_perc = 100;
             }
         }
-        if (TST == 1)
+        if (TST_pressed == 1)
         {
-            if (FD == 0 && prev_FD == 1)
+            if (FD_cur == 0 && FD_prev == 1)
             {
                 insp_pressure -= 5;
                 if (insp_pressure < 30)
                     insp_pressure = 30;
             }
-            if (FU == 0 && prev_FU == 1)
+            if (FD_cur == 0 && FU_prev == 1)
             {
                 insp_pressure += 5;
                 if (insp_pressure > 70)
                     insp_pressure = 70;
             }
-            if (AD == 0 && prev_AD == 1)
+            if (AD_cur == 0 && AD_prev == 1)
             {
                 insp_pressure -= 5;
                 if (insp_pressure < 30)
                     insp_pressure = 30;
             }
-            if (AU == 0 && prev_AU == 1)
+            if (AU_cur == 0 && AU_prev == 1)
             {
                 insp_pressure += 5;
                 if (insp_pressure > 70)
@@ -1108,29 +1301,34 @@ void read_IO()
             }
         }
     }
-    range_factor = perc_of_lower_volume
-                   + (Compression_perc - perc_of_lower_vol_display) * (100 - perc_of_lower_volume)
-                         / (100 - perc_of_lower_vol_display);
-    range_factor = range_factor / 100;
-    if (range_factor > 1)
-        range_factor = 1;
-    if (range_factor < 0)
-        range_factor = 0;
+	
+    if (is_starting_respiration())
+    {
+        range_factor = perc_of_lower_volume
+                       + (Compression_perc - perc_of_lower_vol_display)
+                             * (100 - perc_of_lower_volume) / (100 - perc_of_lower_vol_display);
+        range_factor = range_factor / 100;
+        if (range_factor > 1)
+            range_factor = 1;
+        if (range_factor < 0)
+            range_factor = 0;
+    }
 
 #if (pressure_sensor_available == 1)
     {
         if (millis() - last_read_pres > 100)
         {
             last_read_pres = millis();
-            pressure_abs = int(sparkfumPress.getPressure(ADC_4096) - pressure_baseline);  // mbar
+            pressure_abs = int(sparkfunPress.getPressure(ADC_4096) - pressure_baseline);  // mbar
             if (pressure_abs < 0)
                 pressure_abs = 0;
         }
     }
 #endif
 
-    if (prev_BPM != BPM || prev_Compression_perc != Compression_perc)
-        display_LCD();
+	// BAZINGA - should not be necessary anymore
+    // if (prev_BPM != BPM || prev_Compression_perc != Compression_perc)
+    //     display_breathing();
     wanted_cycle_time = int(100) * int(motion_time) / profile_length;
     if (wanted_cycle_time > breath_cycle_time / profile_length)
         wanted_cycle_time = breath_cycle_time / profile_length;
@@ -1138,33 +1336,46 @@ void read_IO()
         wanted_cycle_time = cycleTime;
 }
 
+bool is_starting_respiration()
+{
+    return index == 0;
+}
+
+// Sends data over serial to be display by a monitor through an interface (UNDOCUMENTED)
+// controlled by send_to_monitor
 void send_data_to_monitor()
 {
-    if (monitor_index == 0)
-        Serial.println("A");
-    if (monitor_index == 1)
-        Serial.println(byte(BPM));
-    if (monitor_index == 2)
-        Serial.println(byte(Compression_perc));
-    if (monitor_index == 3)
-        Serial.println(byte(pressure_abs));
-    if (monitor_index == 4)
-        Serial.println(byte(failure));
-    if (monitor_index == 5)
-    {
-        if (send_beep)
-        {
-            Serial.println(byte(1));
-            send_beep = 0;
-        }
-        else
-            Serial.println(byte(0));
-    }
-    if (monitor_index == 6)
-        Serial.println(byte(insp_pressure));
-    monitor_index += 1;
-    if (monitor_index == 7)
-        monitor_index = 0;
+	if(send_to_monitor){
+		// only refresh every data_frequency
+	    if (millis() - last_sent_data < data_frequency) {return;}
+		else{last_sent_data = millis();}
+	
+	    if (monitor_index == 0)
+	        Serial.println("A");
+	    if (monitor_index == 1)
+	        Serial.println(byte(BPM));
+	    if (monitor_index == 2)
+	        Serial.println(byte(Compression_perc));
+	    if (monitor_index == 3)
+	        Serial.println(byte(pressure_abs));
+	    if (monitor_index == 4)
+	        Serial.println(byte(failure));
+	    if (monitor_index == 5)
+	    {
+	        if (send_beep)
+	        {
+	            Serial.println(byte(1));
+	            send_beep = 0;
+	        }
+	        else
+	            Serial.println(byte(0));
+	    }
+	    if (monitor_index == 6)
+	        Serial.println(byte(insp_pressure));
+	    monitor_index += 1;
+	    if (monitor_index == 7)
+	        monitor_index = 0;
+	}
 }
 
 void LED_FREQ(byte val)
@@ -1187,24 +1398,33 @@ void LED_USR(byte val)
     digitalWrite(pin_USR, val);
 }
 
-void print_tele()  // UNCOMMENT THE TELEMETRY NEEDED
+
+// Serial debugging of the machine
+// You can comment/uncomment any line necessary as needed
+// controlled by the variable telemetry
+void print_tele()
 {
-    //  Serial.print(" Fail (disc,motion,hiPres):"); Serial.print(disconnected); Serial.print(",");
-    //  Serial.print(motion_failure); Serial.print(","); Serial.print(high_pressure_detected);
-    //  Serial.print(" CL:");  Serial.print(cycles_lost);
-    //  Serial.print(" min,max:");  Serial.print(min_arm_pos); Serial.print(",");
-    //  Serial.print(max_arm_pos); Serial.print(" WPWM :");  Serial.print(motorPWM); Serial.print("
-    //  integral:");  Serial.print(int(integral));
-    Serial.print(" Wa:");
-    Serial.print(int(wanted_pos));
-    Serial.print(" Ac:");
-    Serial.print(A_pot);
-    //  Serial.print(" cur:");  Serial.print(A_current);
-    //  Serial.print(" amp:");  Serial.print(Compression_perc);
-    //  Serial.print(" freq:");  Serial.print(A_rate);
-    //  Serial.print(" w cyc t:"); Serial.print(wanted_cycle_time);
-    //  Serial.print(" P :"); Serial.print(pressure_abs);
-    //  Serial.print(" AvgP :"); Serial.print(int(avg_pres));
-    //  Serial.print(" RF:");  Serial.print(range_factor);
-    Serial.println("");
+	if(telemetry){
+		// only refresh every serial_frequency
+	    if (millis() - last_sent_tele < tele_frequency) {return;}
+		else{last_sent_tele = millis();}
+	
+	    Serial.print(" Current Failure (disc,motion,hiPres):"); Serial.print(disconnected); Serial.print(",");
+	    Serial.print(motion_failure); Serial.print(","); Serial.print(high_pressure_detected);
+	    Serial.print(" CL:");  Serial.print(cycles_lost);
+	    Serial.print(" min,max:");  Serial.print(min_arm_pos); Serial.print(",");
+	    Serial.print(max_arm_pos); Serial.print(" WPWM :");  Serial.print(motorPWM); Serial.print("integral:   ");  Serial.print(int(integral));
+	    Serial.print(" Wa:");
+	    Serial.print(int(wanted_pos));
+	    Serial.print(" Ac:");
+	    Serial.print(A_sensed_pos);
+	    Serial.print(" cur:");  Serial.print(A_current);
+	    Serial.print(" amp:");  Serial.print(Compression_perc);
+	    Serial.print(" freq:");  Serial.print(A_rate);
+	    Serial.print(" w cyc t:"); Serial.print(wanted_cycle_time);
+	    Serial.print(" P :"); Serial.print(pressure_abs);
+	    Serial.print(" AvgP :"); Serial.print(int(avg_pres));
+	    Serial.print(" RF:");  Serial.print(range_factor);
+	    Serial.println("");
+	}
 }
